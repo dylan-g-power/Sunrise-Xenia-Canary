@@ -21,6 +21,7 @@
 #endif
 
 #include "third_party/fmt/include/fmt/format.h"
+#include <WinSock2.h>
 
 namespace xe {
 namespace kernel {
@@ -86,21 +87,52 @@ dword_result_t XamEnumerate_entry(dword_t handle, dword_t flags,
 }
 DECLARE_XAM_EXPORT1(XamEnumerate, kNone, kImplemented);
 
+typedef struct {
+  in_addr server_address;
+  DWORD flags;
+  CHAR server_description[200];
+} XTITLE_SERVER_INFO;
+
+// Halo 3 has different lsp service types, this is all of them :)
+const char* desc = {"ttl,usr,shr,web,dbg"};
+
 dword_result_t XamCreateEnumeratorHandle_entry(
     dword_t user_index, dword_t app_id, dword_t open_message,
     dword_t close_message, dword_t extra_size, dword_t item_count,
     dword_t flags, lpdword_t out_handle) {
-  auto e = object_ref<XStaticUntypedEnumerator>(
-      new XStaticUntypedEnumerator(kernel_state(), item_count, extra_size));
 
-  auto result =
-      e->Initialize(user_index, app_id, open_message, close_message, flags);
-  if (XFAILED(result)) {
-    return result;
+  // if the message is the LSP create enum message...
+  if (open_message == 0x58039) {
+    auto e = make_object<XStaticEnumerator<XTITLE_SERVER_INFO>>(kernel_state(),
+                                                                item_count);
+    auto result =
+        e->Initialize(user_index, app_id, open_message, close_message, flags);
+    if (XFAILED(result)) {
+      return result;
+    }
+
+    auto item = e->AppendItem();
+    item->server_address.S_un.S_addr = 0x7F000001;
+    memcpy(&item->server_description, &desc, sizeof(desc));
+
+    XELOGI("XamCreateEnumerator: added {} items to enumerator",
+           e->item_count());
+
+    *out_handle = e->handle();
+    return X_ERROR_SUCCESS;
+  } else {
+    auto e = object_ref<XStaticUntypedEnumerator>(
+        new XStaticUntypedEnumerator(kernel_state(), item_count, extra_size));
+
+    auto result =
+        e->Initialize(user_index, app_id, open_message, close_message, flags);
+    if (XFAILED(result)) {
+      return result;
+    }
+
+    *out_handle = e->handle();
+    return X_ERROR_SUCCESS;
   }
-
-  *out_handle = e->handle();
-  return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamCreateEnumeratorHandle, kNone, kImplemented);
 

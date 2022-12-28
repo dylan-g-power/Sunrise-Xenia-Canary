@@ -20,7 +20,9 @@ namespace kernel {
 namespace xboxkrnl {
 
 dword_result_t XexCheckExecutablePrivilege_entry(dword_t privilege) {
-  // BOOL
+  return 1;
+    
+    // BOOL
   // DWORD Privilege
 
   // Privilege is bit position in xe_xex2_system_flags enum - so:

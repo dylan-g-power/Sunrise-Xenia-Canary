@@ -28,6 +28,16 @@ X_HRESULT XLiveBaseApp::DispatchMessageSync(uint32_t message,
   // NOTE: buffer_length may be zero or valid.
   auto buffer = memory_->TranslateVirtual(buffer_ptr);
   switch (message) {
+    // String verify I think.
+    // Returning 0 would make the game try to read results we're not providing.
+    // Implementing this should fix randomized service tags btw.
+    case 0x0005000C: {
+      return 1;
+    }
+
+    case 0x0005800E: {
+      return 0;
+    }
     case 0x00058004: {
       // Called on startup, seems to just return a bool in the buffer.
       assert_true(!buffer_length || buffer_length == 4);

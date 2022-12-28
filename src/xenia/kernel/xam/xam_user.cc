@@ -96,6 +96,7 @@ X_HRESULT_result_t XamUserGetSigninInfo_entry(
   if (kernel_state()->IsUserSignedIn(user_index)) {
     const auto& user_profile = kernel_state()->user_profile(user_index);
     info->xuid = user_profile->xuid();
+    info->unk08 = 1;
     info->signin_state = user_profile->signin_state();
     xe::string_util::copy_truncating(info->name, user_profile->name(),
                                      xe::countof(info->name));
@@ -434,7 +435,10 @@ DECLARE_XAM_EXPORT1(XamUserWriteProfileSettings, kUserProfiles, kImplemented);
 
 dword_result_t XamUserCheckPrivilege_entry(dword_t user_index, dword_t mask,
                                            lpdword_t out_value) {
-  // checking all users?
+  *out_value = 1;
+  return X_ERROR_SUCCESS;
+    
+    // checking all users?
   if (user_index != 0xFF) {
     if (user_index >= 4) {
       return X_ERROR_INVALID_PARAMETER;

@@ -120,8 +120,16 @@ X_STATUS XSocket::IOControl(uint32_t cmd, uint8_t* arg_ptr) {
 #endif
 }
 
+struct sockaddr_in saServer;
+
 X_STATUS XSocket::Connect(N_XSOCKADDR* name, int name_len) {
-  int ret = connect(native_handle_, (sockaddr*)name, name_len);
+  // Hardcode to connect to local LSP.
+  // TOOD: REMOVE THIS
+  saServer.sin_family = AF_INET;
+  inet_pton(AF_INET, "127.0.0.1", &saServer.sin_addr.s_addr);
+  saServer.sin_port = htons(8080);
+
+  int ret = connect(native_handle_, (sockaddr*)&saServer, name_len);
   if (ret < 0) {
     return X_STATUS_UNSUCCESSFUL;
   }
@@ -130,7 +138,7 @@ X_STATUS XSocket::Connect(N_XSOCKADDR* name, int name_len) {
 }
 
 X_STATUS XSocket::Bind(N_XSOCKADDR_IN* name, int name_len) {
-  int ret = bind(native_handle_, (sockaddr*)name, name_len);
+  int ret = bind(native_handle_, (sockaddr*)&saServer, name_len);
   if (ret < 0) {
     return X_STATUS_UNSUCCESSFUL;
   }
@@ -155,12 +163,12 @@ object_ref<XSocket> XSocket::Accept(N_XSOCKADDR* name, int* name_len) {
   socklen_t n_name_len = sizeof(sockaddr);
   uintptr_t ret = accept(native_handle_, &n_sockaddr, &n_name_len);
   if (ret == -1) {
-    std::memset(name, 0, *name_len);
+    std::memset((sockaddr*)&saServer, 0, *name_len);
     *name_len = 0;
     return nullptr;
   }
 
-  std::memcpy(name, &n_sockaddr, n_name_len);
+  std::memcpy((sockaddr*)&saServer, &n_sockaddr, n_name_len);
   *name_len = n_name_len;
 
   // Create a kernel object to represent the new socket, and copy parameters

@@ -23,7 +23,7 @@ UserProfile::UserProfile(uint8_t index) {
   // 58410A1F checks the user XUID against a mask of 0x00C0000000000000 (3<<54),
   // if non-zero, it prevents the user from playing the game.
   // "You do not have permissions to perform this operation."
-  xuid_ = 0xB13EBABEBABEBABE + index;
+  xuid_ = 0x000901FC3FB8FE71 + index;
   name_ = "User";
   if (index) {
     name_ = "User_" + std::to_string(index);

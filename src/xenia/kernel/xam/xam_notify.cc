@@ -87,6 +87,14 @@ dword_result_t XNotifyGetNext_entry(dword_t handle, dword_t match_id,
   if (param_ptr) {
     *param_ptr = dequeued ? param : 0;
   }
+
+  // This is NAF!!!
+  // Tells the game we're connected to XBL
+  // TODO: Move this.
+  if (!dequeued) {
+    listener->EnqueueNotification(0x2000001, 0x1510F0);
+  }
+
   return dequeued ? 1 : 0;
 }
 DECLARE_XAM_EXPORT2(XNotifyGetNext, kNone, kImplemented, kHighFrequency);

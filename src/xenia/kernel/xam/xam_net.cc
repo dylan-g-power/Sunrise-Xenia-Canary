@@ -173,6 +173,8 @@ dword_result_t NetDll_XNetStartup_entry(dword_t caller,
                                         pointer_t<XNetStartupParams> params) {
   if (params) {
     assert_true(params->cfgSizeOfStruct == sizeof(XNetStartupParams));
+    // Allow unsecure
+    params->cfgFlags |= 0x1;
     std::memcpy(&xnet_startup_params, params, sizeof(XNetStartupParams));
   }
 
@@ -202,6 +204,11 @@ dword_result_t NetDll_XNetCleanup_entry(dword_t caller, lpvoid_t params) {
   return 0;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetCleanup, kNetworking, kImplemented);
+
+dword_result_t XNetLogonGetTitleID_entry(dword_t caller, lpvoid_t params) {
+  return kernel_state()->title_id();
+}
+DECLARE_XAM_EXPORT1(XNetLogonGetTitleID, kNetworking, kImplemented);
 
 dword_result_t NetDll_XNetGetOpt_entry(dword_t one, dword_t option_id,
                                        lpvoid_t buffer_ptr,
@@ -454,9 +461,10 @@ struct XnAddrStatus {
 dword_result_t NetDll_XNetGetTitleXnAddr_entry(dword_t caller,
                                                pointer_t<XNADDR> addr_ptr) {
   // Just return a loopback address atm.
-  addr_ptr->ina.s_addr = htonl(INADDR_LOOPBACK);
-  addr_ptr->inaOnline.s_addr = 0;
-  addr_ptr->wPortOnline = 0;
+  // TODO: Finalize
+  addr_ptr->ina.s_addr = htonl(0x52286BAA);
+  addr_ptr->inaOnline.s_addr = htonl(0x52286BAA);
+  addr_ptr->wPortOnline = htons(9103);
 
   // TODO(gibbed): A proper mac address.
   // RakNet's 360 version appears to depend on abEnet to create "random" 64-bit
@@ -471,9 +479,11 @@ dword_result_t NetDll_XNetGetTitleXnAddr_entry(dword_t caller,
   // from the same system"
   std::memset(addr_ptr->abEnet, 0xCC, 6);
 
-  std::memset(addr_ptr->abOnline, 0, 20);
+  for (int i = 0; i < 20; i++) {
+    addr_ptr->abOnline[i] = i;
+  }
 
-  return XnAddrStatus::XNET_GET_XNADDR_STATIC;
+  return XnAddrStatus::XNET_GET_XNADDR_STATIC | XnAddrStatus::XNET_GET_XNADDR_ONLINE;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetGetTitleXnAddr, kNetworking, kStub);
 
@@ -490,9 +500,29 @@ dword_result_t NetDll_XNetXnAddrToMachineId_entry(dword_t caller,
                                                   pointer_t<XNADDR> addr_ptr,
                                                   lpdword_t id_ptr) {
   // Tell the caller we're not signed in to live (non-zero ret)
-  return 1;
+  *id_ptr = 1;
+  return 0;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetXnAddrToMachineId, kNetworking, kStub);
+
+dword_result_t NetDll_XNetConnect_entry(dword_t caller, pointer_t<XNADDR> addr) {
+  XELOGI("XNetConnect({:08X}:{})", addr->ina.S_un.S_addr, addr->wPortOnline);
+  return 0;
+}
+DECLARE_XAM_EXPORT1(NetDll_XNetConnect, kNetworking, kImplemented);
+
+dword_result_t NetDll_XNetGetConnectStatus_entry(dword_t caller,
+                                                 lpvoid_t addr) {
+  return 2;
+}
+DECLARE_XAM_EXPORT1(NetDll_XNetGetConnectStatus, kNetworking, kImplemented);
+
+dword_result_t NetDll_XNetServerToInAddr_entry(dword_t caller, dword_t addr, dword_t serviceId, lpvoid_t pina) {
+  XELOGI("XNetServerToInAddr({:08X} {:08X})", addr, (uint32_t)pina.guest_address());
+  *pina = addr;
+  return 0;
+}
+DECLARE_XAM_EXPORT1(NetDll_XNetServerToInAddr, kNetworking, kImplemented);
 
 void NetDll_XNetInAddrToString_entry(dword_t caller, dword_t in_addr,
                                      lpstring_t string_out,
@@ -506,7 +536,7 @@ DECLARE_XAM_EXPORT1(NetDll_XNetInAddrToString, kNetworking, kStub);
 dword_result_t NetDll_XNetXnAddrToInAddr_entry(dword_t caller,
                                                pointer_t<XNADDR> xn_addr,
                                                lpvoid_t xid, lpvoid_t in_addr) {
-  return 1;
+  return 0;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetXnAddrToInAddr, kNetworking, kStub);
 
@@ -515,7 +545,7 @@ DECLARE_XAM_EXPORT1(NetDll_XNetXnAddrToInAddr, kNetworking, kStub);
 dword_result_t NetDll_XNetInAddrToXnAddr_entry(dword_t caller, lpvoid_t in_addr,
                                                pointer_t<XNADDR> xn_addr,
                                                lpvoid_t xid) {
-  return 1;
+  return 0;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetInAddrToXnAddr, kNetworking, kStub);
 
@@ -523,7 +553,7 @@ DECLARE_XAM_EXPORT1(NetDll_XNetInAddrToXnAddr, kNetworking, kStub);
 // Reserves a port for use by system link
 dword_result_t NetDll_XNetSetSystemLinkPort_entry(dword_t caller,
                                                   dword_t port) {
-  return 1;
+  return 0;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetSetSystemLinkPort, kNetworking, kStub);
 
@@ -537,7 +567,7 @@ struct XEthernetStatus {
 };
 
 dword_result_t NetDll_XNetGetEthernetLinkStatus_entry(dword_t caller) {
-  return 0;
+  return 1|2|8;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetGetEthernetLinkStatus, kNetworking, kStub);
 
@@ -574,11 +604,26 @@ DECLARE_XAM_EXPORT1(NetDll_XNetDnsRelease, kNetworking, kStub);
 dword_result_t NetDll_XNetQosServiceLookup_entry(dword_t caller, dword_t flags,
                                                  dword_t event_handle,
                                                  lpdword_t pqos) {
-  // Set pqos as some games will try accessing it despite non-successful result
+  XELOGI(
+      "XNetQosServiceLookup({:08X}, {:08X}, {:08X}, {:08X})",
+      caller, flags, event_handle, pqos.guest_address());
+
   if (pqos) {
     auto qos_guest = kernel_memory()->SystemHeapAlloc(sizeof(XNQOS));
     auto qos = kernel_memory()->TranslateVirtual<XNQOS*>(qos_guest);
-    qos->count = qos->count_pending = 0;
+    qos->count = 1;
+
+    qos->info[0].probes_xmit = 4;
+    qos->info[0].probes_recv = 4;
+    qos->info[0].data_len = 1;
+    qos->info[0].data_ptr = *(BYTE*)"A";
+    qos->info[0].rtt_min_in_msecs = 4;
+    qos->info[0].rtt_med_in_msecs = 10;
+    qos->info[0].up_bits_per_sec = 13125;
+    qos->info[0].down_bits_per_sec = 21058;
+    qos->info[0].flags = 1 | 2 | 3;
+    qos->count_pending = 0;
+
     *pqos = qos_guest;
   }
   if (event_handle) {
@@ -587,6 +632,7 @@ dword_result_t NetDll_XNetQosServiceLookup_entry(dword_t caller, dword_t flags,
     assert_not_null(ev);
     ev->Set(0, false);
   }
+
   return 0;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetQosServiceLookup, kNetworking, kStub);
@@ -604,9 +650,147 @@ DECLARE_XAM_EXPORT1(NetDll_XNetQosRelease, kNetworking, kStub);
 dword_result_t NetDll_XNetQosListen_entry(dword_t caller, lpvoid_t id,
                                           lpvoid_t data, dword_t data_size,
                                           dword_t r7, dword_t flags) {
-  return X_ERROR_FUNCTION_FAILED;
+
+  XELOGI(
+  "XNetQosListen({:08X}, {:016X}, {:016X}, {}, {:08X}, {:08X})",
+  caller, id.host_address(), data.host_address(), data_size, r7, flags);
+
+  uint64_t foo = data.host_address();
+
+  return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetQosListen, kNetworking, kStub);
+
+// QOS STRUCTURE - Halo 3
+// This data is title specific, some titles don't use it.
+// This is one example, there are larger structures depending on certain values.
+//byte protocol = 7; // 8 bits
+//byte platform;             // 2 bits
+//byte executable_type = 5;  // 3 bits
+//ushort executable_version = 12070; // 16 bits
+//ushort compatible_version = 11856; // 16 bits
+//byte session_mode = 2;  // 2 bits
+//
+//byte search_preference;  // 2 bits
+//ushort hopper_identifier = 206; // 16 bits
+//bool hopper_ranked = true; // 1 bit
+//byte player_count = 0;  // 4 bits
+//ushort player_valid_flags; // 16 bits
+//
+//byte avg_skill = 1;  // 6 bits
+//byte max_skill = 1;  // 6 bits
+//byte min_skill = 1;  // 6 bits
+//float avg_mu = 0.5f; // 32 bits
+//byte avg_rank = 1;  // 4 bits
+//ushort party_needed = 1; // 16 bits
+//ushort party_join; // 16 bits
+//byte good_host_count = 1;  // 5 bits
+//byte party_nat_type = 1;   // 2 bits
+//byte gamer_zone;           // 3 bits
+//byte gamer_region;         // 7 bits
+//byte language;             // 4 bits
+//byte nat_type = 1;         // 2 bits
+//byte flags;                // 2 bits
+//
+//ushort gather_seconds;  // 13 bits
+
+// Some actual qos data from halo 3 (under xenia)
+// The game doesn't seem to like it for whatever reason.
+   static const unsigned char qosData[] = {
+    0x07, 0x29, 0x79, 0x39, 0x72, 0x83, 0x3B, 0x1B, 0x93, 0x0B, 0x33, 0xA3,
+    0xCB, 0x1B, 0x7B, 0x23, 0x4B, 0x28, 0x01, 0xC0, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F, 0xC0, 0x00, 0x00, 0x40,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x09, 0x85,
+    0xCD, 0xA5, 0x8C, 0x81, 0x51, 0xC9, 0x85, 0xA5, 0xB9, 0xA5, 0xB9, 0x9C,
+    0x01, 0x18, 0x00, 0x00, 0x07, 0xFF, 0xFF, 0xFF, 0xFA, 0xFF, 0xFF, 0xFF,
+    0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x9A,
+    0xFE, 0x30, 0x5C, 0xAD, 0xAB, 0x8E, 0xBB, 0x06, 0x9A, 0x60, 0x20, 0x40,
+    0x80, 0x24, 0x80, 0x36, 0x50, 0x40, 0x01, 0x20, 0x3F, 0x87, 0xF7, 0x1F,
+    0xCE, 0x3C, 0x90, 0x46, 0x9C, 0x16, 0x40, 0xF2, 0x31, 0xA6, 0x47, 0x13,
+    0x1E, 0x02, 0x08, 0x00, 0x00, 0x04, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00};
+
+// Some artificial QOS data which the game seems to accept.
+static const unsigned char fakeQosData[] = {
+    0x07, 0x29, 0x79, 0x31, 0x72, 0x84, 0x00, 0x67, 0x40,
+    0x00, 0x00, 0x10, 0x41, 0x3F, 0x00, 0x00, 0x00, 0x10,
+    0x00, 0x10, 0x00, 0x00, 0xA0, 0x00, 0x20, 0x00, 0x00};
+
+dword_result_t NetDll_XNetQosLookup_entry(dword_t caller, dword_t unk1, dword_t unk2,
+                                          dword_t unk3, dword_t unk4,
+                                          dword_t unk5, dword_t unk6,
+                                          dword_t service_id, dword_t probes_count,
+                                          dword_t bits_per_second, dword_t flags,
+                                          dword_t event_handle, lpdword_t qos_ptr) {
+  if (qos_ptr) {
+    auto qos_guest = kernel_memory()->SystemHeapAlloc(sizeof(XNQOS));
+    auto qos = kernel_memory()->TranslateVirtual<XNQOS*>(qos_guest);
+    qos->count = 1;
+
+    auto data_ptr = kernel_memory()->SystemHeapAlloc(169);
+    auto data = kernel_memory()->TranslateVirtual<int32_t*>(data_ptr);
+
+    memcpy(data, &fakeQosData, sizeof(fakeQosData));
+
+    qos->info[0].probes_xmit = 4;
+    qos->info[0].probes_recv = 4;
+    qos->info[0].data_len = sizeof(fakeQosData);
+    qos->info[0].data_ptr = data_ptr;
+    qos->info[0].rtt_min_in_msecs = 4;
+    qos->info[0].rtt_med_in_msecs = 10;
+    qos->info[0].up_bits_per_sec = 13125;
+    qos->info[0].down_bits_per_sec = 21058;
+    qos->info[0].flags = 1 | 2 | 0x8;
+    qos->count_pending = 0;
+
+    *qos_ptr = qos_guest;
+  }
+  if (event_handle) {
+    auto ev =
+        kernel_state()->object_table()->LookupObject<XEvent>(event_handle);
+    assert_not_null(ev);
+    ev->Set(0, false);
+  }
+
+  return ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(NetDll_XNetQosLookup, kNetworking, kImplemented);
+
+typedef struct {
+  DWORD size_of_struct;
+  DWORD requests_received_count;
+  DWORD probes_received_count;
+  DWORD unk;
+  DWORD data_replies_sent_count;
+  DWORD data_reply_bytes_sent;
+  DWORD probe_replies_sent_count;
+} XNQOSLISTENSTATS;
+
+
+dword_result_t NetDll_XNetQosGetListenStats_entry(
+    dword_t caller, dword_t unk, dword_t pxnkid, lpdword_t pQosListenStats) {
+  XELOGI(
+      "XNetQosGetListenStats({:08X}, {:08X}, {:08X}, {:08X})", caller, unk,
+         caller, unk, pxnkid, pQosListenStats.guest_address());
+
+  if (pQosListenStats) {
+    auto qos =
+        kernel_memory()->TranslateVirtual<XNQOSLISTENSTATS*>(pQosListenStats.guest_address());
+    
+    qos->requests_received_count = 1;
+    qos->probes_received_count = 1;
+    qos->unk = 1;
+    qos->data_replies_sent_count = 1;
+    qos->data_reply_bytes_sent = 1;
+    qos->probe_replies_sent_count = 1;
+  }
+
+  return ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(NetDll_XNetQosGetListenStats, kNetworking, kImplemented);
 
 dword_result_t NetDll_inet_addr_entry(lpstring_t addr_ptr) {
   if (!addr_ptr) {
@@ -625,6 +809,7 @@ dword_result_t NetDll_inet_addr_entry(lpstring_t addr_ptr) {
 }
 DECLARE_XAM_EXPORT1(NetDll_inet_addr, kNetworking, kImplemented);
 
+BOOL optEnable = TRUE;
 dword_result_t NetDll_socket_entry(dword_t caller, dword_t af, dword_t type,
                                    dword_t protocol) {
   XSocket* socket = new XSocket(kernel_state());
@@ -639,7 +824,11 @@ dword_result_t NetDll_socket_entry(dword_t caller, dword_t af, dword_t type,
     return -1;
   }
 
-  return (socket->handle() & 0x00FFFFFF);
+  socket->SetOption(SOL_SOCKET, 0x5801, &optEnable, sizeof(BOOL));
+  if (type == SOCK_STREAM)
+    socket->SetOption(SOL_SOCKET, 0x5802, &optEnable, sizeof(BOOL));
+
+  return socket->handle();
 }
 DECLARE_XAM_EXPORT1(NetDll_socket, kNetworking, kImplemented);
 
@@ -1059,6 +1248,12 @@ dword_result_t NetDll_XNetRegisterKey_entry(dword_t caller, lpdword_t key_id,
   return 0;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetRegisterKey, kNetworking, kStub);
+
+//dword_result_t NetDll_XNetCreateKey_entry(dword_t caller, lpdword_t key_id,
+//                                            lpdword_t exchange_key) {
+//  return 0;
+//}
+//DECLARE_XAM_EXPORT1(NetDll_XNetCreateKey, kNetworking, kStub);
 
 dword_result_t NetDll_XNetUnregisterKey_entry(dword_t caller, lpdword_t key_id,
                                             lpdword_t exchange_key) {
