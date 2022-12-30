@@ -28,16 +28,16 @@ class XAudio2AudioDriver::VoiceCallback : public api::IXAudio2VoiceCallback {
       : semaphore_(semaphore) {}
   ~VoiceCallback() {}
 
-  void OnStreamEnd() {}
-  void OnVoiceProcessingPassEnd() {}
-  void OnVoiceProcessingPassStart(uint32_t samples_required) {}
-  void OnBufferEnd(void* context) {
+  void OnStreamEnd() noexcept {}
+  void OnVoiceProcessingPassEnd() noexcept {}
+  void OnVoiceProcessingPassStart(uint32_t samples_required) noexcept {}
+  void OnBufferEnd(void* context) noexcept {
     auto ret = semaphore_->Release(1, nullptr);
     assert_true(ret);
   }
-  void OnBufferStart(void* context) {}
-  void OnLoopEnd(void* context) {}
-  void OnVoiceError(void* context, HRESULT result) {}
+  void OnBufferStart(void* context) noexcept {}
+  void OnLoopEnd(void* context) noexcept {}
+  void OnVoiceError(void* context, HRESULT result) noexcept {}
 
  private:
   xe::threading::Semaphore* semaphore_ = nullptr;
@@ -71,13 +71,8 @@ bool XAudio2AudioDriver::Initialize() {
     }
   }
   if (!xaudio2_module_) {
-    xaudio2_module_ = static_cast<void*>(LoadLibraryW(L"XAudio2_7.dll"));
-    if (xaudio2_module_) {
-      api_minor_version_ = 7;
-    } else {
-      XELOGE("Failed to load XAudio 2.8 or 2.7 library DLL");
-      return false;
-    }
+    XELOGE("Failed to load XAudio 2.8 library DLL");
+    return false;
   }
 
   // We need to be able to accept frames from any non-STA thread - primarily

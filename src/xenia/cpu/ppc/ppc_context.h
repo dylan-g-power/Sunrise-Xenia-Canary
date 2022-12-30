@@ -377,6 +377,9 @@ typedef struct alignas(64) PPCContext_s {
   uint64_t r[32];   // 0x20 General purpose registers
   uint64_t ctr;     // 0x18 Count register
   uint64_t lr;      // 0x10 Link register
+
+  uint64_t msr;		//machine state register
+
   double f[32];     // 0x120 Floating-point registers
   vec128_t v[128];  // 0x220 VMX128 vector registers
   vec128_t vscr_vec;
@@ -425,6 +428,27 @@ typedef struct alignas(64) PPCContext_s {
   uint64_t reserved_val;
   ThreadState* thread_state;
   uint8_t* virtual_membase;
+
+  template <typename T = uint8_t*>
+  inline T TranslateVirtual(uint32_t guest_address) XE_RESTRICT const {
+#if XE_PLATFORM_WIN32 == 1
+    uint8_t* host_address = virtual_membase + guest_address;
+    if (guest_address >= static_cast<uint32_t>(reinterpret_cast<uintptr_t>(this))) {
+      host_address += 0x1000;
+    }
+    return reinterpret_cast<T>(host_address);
+#else
+    return processor->memory()->TranslateVirtual<T>(guest_address);
+
+#endif
+  }
+  //for convenience in kernel functions, version that auto narrows to uint32
+  template <typename T = uint8_t*>
+  inline T TranslateVirtualGPR(uint64_t guest_address) XE_RESTRICT const {
+    return TranslateVirtual<T>(static_cast<uint32_t>(guest_address));
+  
+  }
+
   static std::string GetRegisterName(PPCRegister reg);
   std::string GetStringFromValue(PPCRegister reg) const;
   void SetValueFromString(PPCRegister reg, std::string value);

@@ -54,9 +54,9 @@ void Patcher::ApplyPatch(Memory* memory, const PatchInfoEntry* patch) {
                 patch_data_entry.data.alloc_size);
 
     // Restore previous protection
-    heap->Protect(patch_data_entry.address,
-                  (uint32_t)patch_data_entry.data.alloc_size,
-                  old_address_protect);
+    //heap->Protect(patch_data_entry.address,
+    //              (uint32_t)patch_data_entry.data.alloc_size,
+    //              old_address_protect);
 
     is_any_patch_applied_ = true;
   }

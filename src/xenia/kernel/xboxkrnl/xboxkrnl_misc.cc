@@ -19,8 +19,14 @@ namespace xe {
 namespace kernel {
 namespace xboxkrnl {
 
-void KeEnableFpuExceptions_entry(dword_t enabled) {
+void KeEnableFpuExceptions_entry(
+    const ppc_context_t& ctx) {  // dword_t enabled) {
   // TODO(benvanik): can we do anything about exceptions?
+  // theres a lot more thats supposed to happen here, the floating point state has to be saved to kthread, the irql changes, the machine state register is changed to enable exceptions
+
+  X_KTHREAD* kthread = ctx->TranslateVirtual<X_KTHREAD*>(
+      ctx->TranslateVirtualGPR<X_KPCR*>(ctx->r[13])->current_thread);
+  kthread->fpu_exceptions_on = static_cast<uint32_t>(ctx->r[3]) != 0;
 }
 DECLARE_XBOXKRNL_EXPORT1(KeEnableFpuExceptions, kNone, kStub);
 #if 0
@@ -111,6 +117,13 @@ void KeSaveFloatingPointState_entry(ppc_context_t& ctx) {
 
 DECLARE_XBOXKRNL_EXPORT1(KeSaveFloatingPointState, kNone, kImplemented);
 #endif
+
+void KeSetPRVRegister_entry(dword_t arg1, qword_t arg2) {
+  assert_true(arg1 < 0x1000);
+  *kernel_memory()->TranslateVirtual<xe::be<uint64_t>*>(0x8FFF1000 + arg1) =
+      arg2.value();
+}
+DECLARE_XBOXKRNL_EXPORT1(KeSetPRVRegister, kNone, kSketchy);
 
 }  // namespace xboxkrnl
 }  // namespace kernel

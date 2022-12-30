@@ -27,6 +27,9 @@ dword_result_t XMsgInProcessCall_entry(dword_t app, dword_t message,
   if (result == X_ERROR_NOT_FOUND) {
     XELOGE("XMsgInProcessCall: app {:08X} undefined", app);
   }
+  
+  if (result == 0) result = -1;
+
   return result;
 }
 DECLARE_XAM_EXPORT1(XMsgInProcessCall, kNone, kImplemented);
@@ -53,7 +56,8 @@ X_HRESULT xeXMsgStartIORequestEx(uint32_t app, uint32_t message,
                                  uint32_t buffer_length,
                                  XMSGSTARTIOREQUEST_UNKNOWNARG* unknown) {
   auto result = kernel_state()->app_manager()->DispatchMessageAsync(
-      app, message, buffer_ptr, buffer_length);
+        app, message, buffer_ptr, buffer_length);
+
   if (result == X_E_NOTFOUND) {
     XELOGE("XMsgStartIORequestEx: app {:08X} undefined", app);
     result = X_E_INVALIDARG;

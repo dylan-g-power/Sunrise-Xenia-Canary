@@ -1712,8 +1712,10 @@ void D3D12CommandProcessor::ShutdownContext() {
 
   CommandProcessor::ShutdownContext();
 }
-// todo: bit-pack the bools and use bitarith to reduce branches
-void D3D12CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
+
+XE_FORCEINLINE
+void D3D12CommandProcessor::WriteRegisterForceinline(uint32_t index,
+                                                     uint32_t value) {
   __m128i to_rangecheck = _mm_set1_epi16(static_cast<short>(index));
 
   __m128i lower_bounds = _mm_setr_epi16(
@@ -1783,14 +1785,16 @@ void D3D12CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
     return;
   }
 }
+// todo: bit-pack the bools and use bitarith to reduce branches
+void D3D12CommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
+  WriteRegisterForceinline(index, value);
+}
 
 void D3D12CommandProcessor::WriteRegistersFromMem(uint32_t start_index,
                                                   uint32_t* base,
                                                   uint32_t num_registers) {
-  for (uint32_t i = 0; i < num_registers; ++i) {
-    uint32_t data = xe::load_and_swap<uint32_t>(base + i);
-    D3D12CommandProcessor::WriteRegister(start_index + i, data);
-  }
+  WriteRegisterRangeFromMem_WithKnownBound<0, 0xFFFF>(start_index, base,
+                                                      num_registers);
 }
 
 void D3D12CommandProcessor::WriteALURangeFromRing(xe::RingBuffer* ring,
@@ -1915,12 +1919,10 @@ void D3D12CommandProcessor::WriteRegisterRangeFromRing(xe::RingBuffer* ring,
       ring->BeginRead(num_registers * sizeof(uint32_t));
 
   XE_LIKELY_IF(!range.second) {
-    uint32_t num_regs_firstrange =
-        static_cast<uint32_t>(range.first_length / sizeof(uint32_t));
-
-    D3D12CommandProcessor::WriteRegistersFromMem(
+    WriteRegistersFromMem(
         base, reinterpret_cast<uint32_t*>(const_cast<uint8_t*>(range.first)),
-        num_regs_firstrange);
+        num_registers);
+
     ring->EndRead(range);
   }
   else {
@@ -1939,101 +1941,167 @@ constexpr bool bounds_may_have_bounds(uint32_t reg, uint32_t last_reg) {
          bounds_may_have_reg<register_lower_bound, register_upper_bound>(
              last_reg);
 }
-template <uint32_t register_lower_bound, uint32_t register_upper_bound>
-XE_FORCEINLINE void
-D3D12CommandProcessor::WriteRegisterRangeFromMem_WithKnownBound(
-    uint32_t base, uint32_t* range, uint32_t num_registers) {
-  constexpr auto bounds_has_reg =
-      bounds_may_have_reg<register_lower_bound, register_upper_bound>;
-  constexpr auto bounds_has_bounds =
-      bounds_may_have_bounds<register_lower_bound, register_upper_bound>;
+XE_FORCEINLINE
+void D3D12CommandProcessor::WriteShaderConstantsFromMem(
+    uint32_t start_index, uint32_t* base, uint32_t num_registers) {
+  if (frame_open_) {
+    bool cbuffer_pixel_uptodate = cbuffer_binding_float_pixel_.up_to_date;
+    bool cbuffer_vertex_uptodate = cbuffer_binding_float_vertex_.up_to_date;
+    if (cbuffer_pixel_uptodate || cbuffer_vertex_uptodate) {
+      // super naive, could just do some bit magic and interval checking,
+      // but we just need this hoisted out of the copy so we do a bulk copy
+      // because its the actual load/swap/store we're getting murdered by
+      // this precheck followed by copy_and_swap_32_unaligned reduced the cpu
+      // usage from packettype0/writeregistersfrommem from 10-11% of cpu time
+      // spent on xenia to like 1%
+      // chrispy: todo, this can be reduced even further, should be split into
+      // two loops and should skip whole words, this could net us even bigger
+      // gains
+      uint32_t map_index = (start_index - XE_GPU_REG_SHADER_CONSTANT_000_X) / 4;
+      uint32_t end_map_index =
+          (start_index + num_registers - XE_GPU_REG_SHADER_CONSTANT_000_X) / 4;
 
-  for (uint32_t i = 0; i < num_registers; ++i) {
-    uint32_t data = xe::load_and_swap<uint32_t>(range + i);
-
-    {
-      uint32_t index = base + i;
-      uint32_t value = data;
-      XE_MSVC_ASSUME(index >= register_lower_bound &&
-                     index < register_upper_bound);
-      register_file_->values[index].u32 = value;
-
-      unsigned expr = 0;
-
-      if constexpr (bounds_has_bounds(XE_GPU_REG_SCRATCH_REG0,
-                                      XE_GPU_REG_SCRATCH_REG7)) {
-        expr |= (index - XE_GPU_REG_SCRATCH_REG0 < 8);
-      }
-      if constexpr (bounds_has_reg(XE_GPU_REG_COHER_STATUS_HOST)) {
-        expr |= (index == XE_GPU_REG_COHER_STATUS_HOST);
-      }
-      if constexpr (bounds_has_bounds(XE_GPU_REG_DC_LUT_RW_INDEX,
-                                      XE_GPU_REG_DC_LUT_30_COLOR)) {
-        expr |= ((index - XE_GPU_REG_DC_LUT_RW_INDEX) <=
-                 (XE_GPU_REG_DC_LUT_30_COLOR - XE_GPU_REG_DC_LUT_RW_INDEX));
-      }
-      // chrispy: reordered for msvc branch probability (assumes
-      // if is taken and else is not)
-      if (XE_LIKELY(expr == 0)) {
-        XE_MSVC_REORDER_BARRIER();
-
-      } else {
-        HandleSpecialRegisterWrite(index, value);
-        goto write_done;
-      }
-      XE_MSVC_ASSUME(index >= register_lower_bound &&
-                     index < register_upper_bound);
-      if constexpr (bounds_has_bounds(XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0,
-                                      XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5)) {
-        if (index >= XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 &&
-            index <= XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5) {
-          cbuffer_binding_fetch_.up_to_date = false;
-          // texture cache is never nullptr
-          texture_cache_->TextureFetchConstantWritten(
-              (index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) / 6);
-
-          goto write_done;
-        }
-      }
-      XE_MSVC_ASSUME(index >= register_lower_bound &&
-                     index < register_upper_bound);
-      if constexpr (bounds_has_bounds(XE_GPU_REG_SHADER_CONSTANT_000_X,
-                                      XE_GPU_REG_SHADER_CONSTANT_511_W)) {
-        if (index >= XE_GPU_REG_SHADER_CONSTANT_000_X &&
-            index <= XE_GPU_REG_SHADER_CONSTANT_511_W) {
-          if (frame_open_) {
-            uint32_t float_constant_index =
-                (index - XE_GPU_REG_SHADER_CONSTANT_000_X) >> 2;
-            if (float_constant_index >= 256) {
-              float_constant_index -= 256;
-              if (current_float_constant_map_pixel_[float_constant_index >> 6] &
-                  (1ull << (float_constant_index & 63))) {
-                cbuffer_binding_float_pixel_.up_to_date = false;
-              }
-            } else {
-              if (current_float_constant_map_vertex_[float_constant_index >>
-                                                     6] &
-                  (1ull << (float_constant_index & 63))) {
-                cbuffer_binding_float_vertex_.up_to_date = false;
-              }
-            }
+      if (map_index < 256 && cbuffer_vertex_uptodate) {
+        for (; map_index < end_map_index; ++map_index) {
+          if (current_float_constant_map_vertex_[map_index >> 6] &
+              (1ull << map_index)) {
+            cbuffer_vertex_uptodate = false;
+            break;
           }
-          goto write_done;
         }
       }
-      XE_MSVC_ASSUME(index >= register_lower_bound &&
-                     index < register_upper_bound);
-      if constexpr (bounds_has_bounds(XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031,
-                                      XE_GPU_REG_SHADER_CONSTANT_LOOP_31)) {
-        if (index >= XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031 &&
-            index <= XE_GPU_REG_SHADER_CONSTANT_LOOP_31) {
-          cbuffer_binding_bool_loop_.up_to_date = false;
-          goto write_done;
+      if (end_map_index > 256 && cbuffer_pixel_uptodate) {
+        for (; map_index < end_map_index; ++map_index) {
+          uint32_t float_constant_index = map_index;
+          float_constant_index -= 256;
+          if (current_float_constant_map_pixel_[float_constant_index >> 6] &
+              (1ull << float_constant_index)) {
+            cbuffer_pixel_uptodate = false;
+            break;
+          }
         }
       }
     }
-  write_done:;
+    cbuffer_binding_float_pixel_.up_to_date = cbuffer_pixel_uptodate;
+    cbuffer_binding_float_vertex_.up_to_date = cbuffer_vertex_uptodate;
   }
+
+  // maybe use non-temporal copy if possible...
+  copy_and_swap_32_unaligned(&register_file_->values[start_index], base,
+                             num_registers);
+}
+XE_FORCEINLINE
+void D3D12CommandProcessor::WriteBoolLoopFromMem(uint32_t start_index,
+                                                 uint32_t* base,
+                                                 uint32_t num_registers) {
+  cbuffer_binding_bool_loop_.up_to_date = false;
+  copy_and_swap_32_unaligned(&register_file_->values[start_index], base,
+                             num_registers);
+}
+XE_FORCEINLINE
+void D3D12CommandProcessor::WriteFetchFromMem(uint32_t start_index,
+                                              uint32_t* base,
+                                              uint32_t num_registers) {
+  cbuffer_binding_fetch_.up_to_date = false;
+
+  uint32_t first_fetch =
+      ((start_index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) / 6);
+  uint32_t last_fetch =  // i think last_fetch should be inclusive if its modulo
+                         // is nz...
+      (((start_index + num_registers) - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) /
+       6);
+  texture_cache_->TextureFetchConstantsWritten(first_fetch, last_fetch);
+
+  copy_and_swap_32_unaligned(&register_file_->values[start_index], base,
+                             num_registers);
+}
+
+void D3D12CommandProcessor::WritePossiblySpecialRegistersFromMem(
+    uint32_t start_index, uint32_t* base, uint32_t numregs) {
+  uint32_t end = numregs + start_index;
+  for (uint32_t index = start_index; index < end; ++index, ++base) {
+    uint32_t value = xe::load_and_swap<uint32_t>(base);
+
+    register_file_->values[index].u32 = value;
+
+    unsigned expr = 0;
+
+    expr |= (index - XE_GPU_REG_SCRATCH_REG0 < 8);
+
+    expr |= (index == XE_GPU_REG_COHER_STATUS_HOST);
+
+    expr |= ((index - XE_GPU_REG_DC_LUT_RW_INDEX) <=
+             (XE_GPU_REG_DC_LUT_30_COLOR - XE_GPU_REG_DC_LUT_RW_INDEX));
+
+    if (expr == 0) {
+    } else {
+      HandleSpecialRegisterWrite(index, value);
+    }
+  }
+}
+template <uint32_t register_lower_bound, uint32_t register_upper_bound>
+XE_FORCEINLINE void
+D3D12CommandProcessor::WriteRegisterRangeFromMem_WithKnownBound(
+    uint32_t start_index, uint32_t* base, uint32_t num_registers) {
+  uint32_t end = start_index + num_registers;
+
+  uint32_t current_index = start_index;
+
+  auto get_end_before_qty = [&end, current_index](uint32_t regnum) {
+    return std::min<uint32_t>(regnum, end) - current_index;
+  };
+#define REGULAR_WRITE_CALLBACK(s, e, i, b, n) \
+  copy_and_swap_32_unaligned(&register_file_->values[i], b, n)
+#define WRITE_FETCH_CONSTANTS_CALLBACK(str, er, ind, b, n) \
+  WriteFetchFromMem(ind, b, n)
+#define SPECIAL_REG_RANGE_CALLBACK(str, edr, ind, bs, n) \
+  WritePossiblySpecialRegistersFromMem(ind, bs, n)
+#define WRITE_SHADER_CONSTANTS_CALLBACK(start_range, end_range, index, base, \
+                                        n)                                   \
+  WriteShaderConstantsFromMem(index, base, n)
+#define WRITE_BOOL_LOOP_CALLBACK(s, e, i, b, n) WriteBoolLoopFromMem(i, b, n)
+
+#define DO_A_RANGE(start_range, end_range, cb)                       \
+  if constexpr (start_range >= register_lower_bound ||               \
+                end_range > register_lower_bound) {                  \
+    if (current_index < (end_range)) {                               \
+      uint32_t ntowrite = get_end_before_qty(end_range);             \
+      cb((start_range), (end_range), current_index, base, ntowrite); \
+      current_index += ntowrite;                                     \
+      base += ntowrite;                                              \
+    }                                                                \
+    if (current_index >= end) {                                      \
+      return;                                                        \
+    }                                                                \
+  }
+
+#define REFRESH_MSVC_RANGE()                              \
+  XE_MSVC_ASSUME(current_index >= register_lower_bound && \
+                 current_index < register_upper_bound)
+
+  REFRESH_MSVC_RANGE();
+
+  DO_A_RANGE(0, XE_GPU_REG_SCRATCH_REG0, REGULAR_WRITE_CALLBACK);
+  REFRESH_MSVC_RANGE();
+  DO_A_RANGE(XE_GPU_REG_SCRATCH_REG0, XE_GPU_REG_DC_LUT_30_COLOR + 1,
+             SPECIAL_REG_RANGE_CALLBACK);
+  REFRESH_MSVC_RANGE();
+  DO_A_RANGE(XE_GPU_REG_DC_LUT_30_COLOR + 1, XE_GPU_REG_SHADER_CONSTANT_000_X,
+             REGULAR_WRITE_CALLBACK);
+  REFRESH_MSVC_RANGE();
+  DO_A_RANGE(XE_GPU_REG_SHADER_CONSTANT_000_X,
+             XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0,
+             WRITE_SHADER_CONSTANTS_CALLBACK);
+  REFRESH_MSVC_RANGE();
+  DO_A_RANGE(XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0,
+             XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5 + 1,
+             WRITE_FETCH_CONSTANTS_CALLBACK);
+  REFRESH_MSVC_RANGE();
+  DO_A_RANGE(XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031,
+             XE_GPU_REG_SHADER_CONSTANT_LOOP_31 + 1, WRITE_BOOL_LOOP_CALLBACK);
+  REFRESH_MSVC_RANGE();
+  DO_A_RANGE(XE_GPU_REG_SHADER_CONSTANT_LOOP_31 + 1, 65536,
+             REGULAR_WRITE_CALLBACK);
 }
 template <uint32_t register_lower_bound, uint32_t register_upper_bound>
 XE_FORCEINLINE void
@@ -2041,11 +2109,6 @@ D3D12CommandProcessor::WriteRegisterRangeFromRing_WithKnownBound(
     xe::RingBuffer* ring, uint32_t base, uint32_t num_registers) {
   RingBuffer::ReadRange range =
       ring->BeginRead(num_registers * sizeof(uint32_t));
-
-  constexpr auto bounds_has_reg =
-      bounds_may_have_reg<register_lower_bound, register_upper_bound>;
-  constexpr auto bounds_has_bounds =
-      bounds_may_have_bounds<register_lower_bound, register_upper_bound>;
 
   XE_LIKELY_IF(!range.second) {
     WriteRegisterRangeFromMem_WithKnownBound<register_lower_bound,
@@ -2644,11 +2707,17 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   // todo: use SIMD for getscissor + scaling here, should reduce code size more
   draw_util::Scissor scissor;
   draw_util::GetScissor(regs, scissor);
+#if XE_ARCH_AMD64 == 1
+  __m128i* scisp = (__m128i*)&scissor;
+  *scisp = _mm_mullo_epi32(
+      *scisp, _mm_setr_epi32(draw_resolution_scale_x, draw_resolution_scale_y,
+                             draw_resolution_scale_x, draw_resolution_scale_y));
+#else
   scissor.offset[0] *= draw_resolution_scale_x;
   scissor.offset[1] *= draw_resolution_scale_y;
   scissor.extent[0] *= draw_resolution_scale_x;
   scissor.extent[1] *= draw_resolution_scale_y;
-
+#endif
   // Update viewport, scissor, blend factor and stencil reference.
   UpdateFixedFunctionState(viewport_info, scissor, primitive_polygonal,
                            normalized_depth_control);
@@ -2714,9 +2783,9 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     }
 
     if (vfetch_current_queued) {
-      // so far, i have never seen vfetch_current_queued > 4. 1 is most common, 2 happens occasionally. did not test many games though
-      // pre-acquire the critical region so we're not repeatedly re-acquiring it
-      // in requestrange
+      // so far, i have never seen vfetch_current_queued > 4. 1 is most common,
+      // 2 happens occasionally. did not test many games though pre-acquire the
+      // critical region so we're not repeatedly re-acquiring it in requestrange
       auto shared_memory_request_range_hoisted =
           global_critical_region::Acquire();
 
@@ -3142,7 +3211,6 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
             auto physaddr = memory_->TranslatePhysical(written_address);
             memory::vastcpy(physaddr, (uint8_t*)readback_mapping,
                             written_length);
-            // XEDmaCpy(physaddr, readback_mapping, written_length);
             D3D12_RANGE readback_write_range = {};
             readback_buffer->Unmap(0, &readback_write_range);
           }
@@ -3170,9 +3238,7 @@ void D3D12CommandProcessor::CheckSubmissionFence(uint64_t await_submission) {
               direct_queue->Signal(queue_operations_since_submission_fence_,
                                    fence_value) &&
               SUCCEEDED(queue_operations_since_submission_fence_
-                            ->SetEventOnCompletion(fence_value,
-                                                   fence_completion_event_)))) {
-        WaitForSingleObject(fence_completion_event_, INFINITE);
+                            ->SetEventOnCompletion(fence_value, nullptr)))) {
         queue_operations_done_since_submission_signal_ = false;
       } else {
         XELOGE(
@@ -3188,9 +3254,8 @@ void D3D12CommandProcessor::CheckSubmissionFence(uint64_t await_submission) {
   uint64_t submission_completed_before = submission_completed_;
   submission_completed_ = submission_fence_->GetCompletedValue();
   if (submission_completed_ < await_submission) {
-    if (SUCCEEDED(submission_fence_->SetEventOnCompletion(
-            await_submission, fence_completion_event_))) {
-      WaitForSingleObject(fence_completion_event_, INFINITE);
+    if (SUCCEEDED(submission_fence_->SetEventOnCompletion(await_submission,
+                                                          nullptr))) {
       submission_completed_ = submission_fence_->GetCompletedValue();
     }
   }
@@ -3643,15 +3708,14 @@ XE_NOINLINE void D3D12CommandProcessor::UpdateSystemConstantValues_Impl(
   // flow.
   reg::RB_COLOR_INFO color_infos[4];
   float rt_clamp[4][4];
+  // Two UINT32_MAX if no components actually existing in the RT are written.
   uint32_t rt_keep_masks[4][2];
   for (uint32_t i = 0; i < 4; ++i) {
     auto color_info = regs.Get<reg::RB_COLOR_INFO>(
         reg::RB_COLOR_INFO::rt_register_indices[i]);
     color_infos[i] = color_info;
     if (edram_rov_used) {
-      // Get the mask for keeping previous color's components unmodified,
-      // or two UINT32_MAX if no colors actually existing in the RT are written.
-      DxbcShaderTranslator::ROV_GetColorFormatSystemConstants(
+      RenderTargetCache::GetPSIColorFormatInfo(
           color_info.color_format, (normalized_color_mask >> (i * 4)) & 0b1111,
           rt_clamp[i][0], rt_clamp[i][1], rt_clamp[i][2], rt_clamp[i][3],
           rt_keep_masks[i][0], rt_keep_masks[i][1]);
@@ -4021,11 +4085,10 @@ XE_NOINLINE void D3D12CommandProcessor::UpdateSystemConstantValues_Impl(
             rt_base_dwords_scaled);
         system_constants_.edram_rt_base_dwords_scaled[i] =
             rt_base_dwords_scaled;
-        uint32_t format_flags = DxbcShaderTranslator::ROV_AddColorFormatFlags(
-            color_info.color_format);
+        uint32_t format_flags =
+            RenderTargetCache::AddPSIColorFormatFlags(color_info.color_format);
         update_dirty_uint32_cmp(system_constants_.edram_rt_format_flags[i],
                                 format_flags);
-
         system_constants_.edram_rt_format_flags[i] = format_flags;
         // Can't do float comparisons here because NaNs would result in always
         // setting the dirty flag.
@@ -4357,7 +4420,8 @@ bool D3D12CommandProcessor::UpdateBindings(
       uint32_t float_constant_index;
       while (xe::bit_scan_forward(float_constant_map_entry,
                                   &float_constant_index)) {
-        float_constant_map_entry &= ~(1ull << float_constant_index);
+        float_constant_map_entry =
+            xe::clear_lowest_bit(float_constant_map_entry);
         std::memcpy(float_constants,
                     &regs[XE_GPU_REG_SHADER_CONSTANT_000_X + (i << 8) +
                           (float_constant_index << 2)]
@@ -4388,7 +4452,8 @@ bool D3D12CommandProcessor::UpdateBindings(
         uint32_t float_constant_index;
         while (xe::bit_scan_forward(float_constant_map_entry,
                                     &float_constant_index)) {
-          float_constant_map_entry &= ~(1ull << float_constant_index);
+          float_constant_map_entry =
+              xe::clear_lowest_bit(float_constant_map_entry);
           std::memcpy(float_constants,
                       &regs[XE_GPU_REG_SHADER_CONSTANT_256_X + (i << 8) +
                             (float_constant_index << 2)]
@@ -4879,7 +4944,7 @@ bool D3D12CommandProcessor::UpdateBindings_BindfulPath(
     bool& retflag) {
   retflag = true;
   auto& provider = this->GetD3D12Provider();
-  size_t texture_count_pixel = textures_pixel->size();
+  size_t texture_count_pixel = textures_pixel ? textures_pixel->size() : 0;
   size_t texture_count_vertex = textures_vertex.size();
   //
   // Bindful descriptors path.
@@ -5154,6 +5219,7 @@ void D3D12CommandProcessor::WriteGammaRampSRV(
 #define COMMAND_PROCESSOR D3D12CommandProcessor
 
 #include "../pm4_command_processor_implement.h"
+#undef COMMAND_PROCESSOR
 }  // namespace d3d12
 }  // namespace gpu
 }  // namespace xe

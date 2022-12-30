@@ -41,8 +41,7 @@ struct XAPC {
   // KAPC is 0x28(40) bytes? (what's passed to ExAllocatePoolWithTag)
   // This is 4b shorter than NT - looks like the reserved dword at +4 is gone.
   // NOTE: stored in guest memory.
-  uint8_t type;                      // +0
-  uint8_t unk1;                      // +1
+  uint16_t type;                      // +0
   uint8_t processor_mode;            // +2
   uint8_t enqueued;                  // +3
   xe::be<uint32_t> thread_ptr;       // +4
@@ -57,7 +56,6 @@ struct XAPC {
 
   void Initialize() {
     type = 18;  // ApcObject
-    unk1 = 0;
     processor_mode = 0;
     enqueued = 0;
     thread_ptr = 0;
@@ -72,7 +70,8 @@ struct XAPC {
 // Processor Control Region
 struct X_KPCR {
   xe::be<uint32_t> tls_ptr;         // 0x0
-  uint8_t unk_04[0x2C];             // 0x4
+  xe::be<uint32_t> msr_mask;		// 0x4
+  uint8_t unk_08[0x28];             // 0x8
   xe::be<uint32_t> pcr_ptr;         // 0x30
   uint8_t unk_34[0x3C];             // 0x34
   xe::be<uint32_t> stack_base_ptr;  // 0x70 Stack base address (high addr)
@@ -100,10 +99,15 @@ struct X_KTHREAD {
   uint8_t unk_58[0x4];                // 0x58
   xe::be<uint32_t> stack_base;        // 0x5C
   xe::be<uint32_t> stack_limit;       // 0x60
-  uint8_t unk_64[0x4];                // 0x64
+  xe::be<uint32_t> stack_kernel;       // 0x64
   xe::be<uint32_t> tls_address;       // 0x68
   uint8_t unk_6C;                     // 0x6C
-  uint8_t unk_6D[0x7];                // 0x6D
+  //0x70 = priority?
+  uint8_t unk_6D[0x3];                // 0x6D
+  uint8_t priority;					  // 0x70
+  uint8_t fpu_exceptions_on;		  // 0x71
+  uint8_t unk_72;
+  uint8_t unk_73;
   xe::be<uint32_t> unk_74;            // 0x74
   xe::be<uint32_t> unk_78;            // 0x78
   xe::be<uint32_t> unk_7C;            // 0x7C
@@ -118,7 +122,7 @@ struct X_KTHREAD {
   uint8_t unk_B4[0x8];                // 0xB4
   uint8_t suspend_count;              // 0xBC
   uint8_t unk_BD;                     // 0xBD
-  uint8_t unk_BE;                     // 0xBE
+  uint8_t terminated;                     // 0xBE
   uint8_t current_cpu;                // 0xBF
   uint8_t unk_C0[0x10];               // 0xC0
   xe::be<uint32_t> stack_alloc_base;  // 0xD0

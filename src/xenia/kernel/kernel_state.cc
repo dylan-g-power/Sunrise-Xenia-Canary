@@ -52,7 +52,8 @@ KernelState::KernelState(Emulator* emulator)
   file_system_ = emulator->file_system();
 
   app_manager_ = std::make_unique<xam::AppManager>();
-  user_profiles_.emplace(0, std::make_unique<xam::UserProfile>(0));
+  user_profiles_.emplace(
+      0, std::make_unique<xam::UserProfile>(0, emulator->profile_root()));
 
   auto content_root = emulator_->content_root();
   if (!content_root.empty()) {
@@ -421,6 +422,9 @@ X_RESULT KernelState::FinishLoadingUserModule(
   emulator_->patcher()->ApplyPatchesForTitle(memory_, module->title_id(),
                                              module->hash());
   emulator_->on_patch_apply();
+  if (module->xex_module()) {
+    module->xex_module()->Precompile();
+  }
 
   if (module->is_dll_module() && module->entry_point() && call_entry) {
     // Call DllMain(DLL_PROCESS_ATTACH):
@@ -515,7 +519,7 @@ void KernelState::UnloadUserModule(const object_ref<UserModule>& module,
                              return e->path() == module->path();
                            }) == user_modules_.end());
 
-  object_table()->ReleaseHandle(module->handle());
+  object_table()->ReleaseHandleInLock(module->handle());
 }
 
 void KernelState::TerminateTitle() {
@@ -967,7 +971,13 @@ void KernelState::UpdateUsedUserProfiles() {
     }
 
     if (!IsUserSignedIn(i) && is_used) {
-      user_profiles_.emplace(i, std::make_unique<xam::UserProfile>(i));
+      auto profile =
+          std::make_unique<xam::UserProfile>(i, emulator_->profile_root());
+      auto spa_file = emulator()->spa_file();
+      if (spa_file) {
+        profile->SetTitleSpaData(spa_file);
+      }
+      user_profiles_.emplace(i, std::move(profile));
       BroadcastNotification(0x12, 0);
     }
   }

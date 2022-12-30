@@ -20,8 +20,8 @@
 #include "xenia/base/platform_win.h"
 #endif
 
-#include "third_party/fmt/include/fmt/format.h"
 #include <WinSock2.h>
+#include "third_party/fmt/include/fmt/format.h"
 
 namespace xe {
 namespace kernel {
@@ -100,7 +100,6 @@ dword_result_t XamCreateEnumeratorHandle_entry(
     dword_t user_index, dword_t app_id, dword_t open_message,
     dword_t close_message, dword_t extra_size, dword_t item_count,
     dword_t flags, lpdword_t out_handle) {
-
   // if the message is the LSP create enum message...
   if (open_message == 0x58039) {
     auto e = make_object<XStaticEnumerator<XTITLE_SERVER_INFO>>(kernel_state(),

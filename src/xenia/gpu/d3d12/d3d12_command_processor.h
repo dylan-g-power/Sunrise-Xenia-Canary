@@ -1,6 +1,4 @@
 /**
-/**
-/**
  ******************************************************************************
  * Xenia : Xbox 360 Emulator Research Project                                 *
  ******************************************************************************
@@ -50,8 +48,9 @@ struct MemExportRange {
 };
 class D3D12CommandProcessor final : public CommandProcessor {
  protected:
+#define OVERRIDING_BASE_CMDPROCESSOR
 #include "../pm4_command_processor_declare.h"
-
+#undef OVERRIDING_BASE_CMDPROCESSOR
  public:
   explicit D3D12CommandProcessor(D3D12GraphicsSystem* graphics_system,
                                  kernel::KernelState* kernel_state);
@@ -212,12 +211,25 @@ class D3D12CommandProcessor final : public CommandProcessor {
  protected:
   bool SetupContext() override;
   void ShutdownContext() override;
-
-  void WriteRegister(uint32_t index, uint32_t value) override;
   XE_FORCEINLINE
+  void WriteRegisterForceinline(uint32_t index, uint32_t value);
+  void WriteRegister(uint32_t index, uint32_t value) override;
+  
   virtual void WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
                                      uint32_t num_registers) override;
+  /*helper functions for WriteRegistersFromMem*/
+  XE_FORCEINLINE
+  void WriteShaderConstantsFromMem(uint32_t start_index, uint32_t* base,
+                                     uint32_t num_registers);
+  XE_FORCEINLINE
+  void WriteBoolLoopFromMem(uint32_t start_index, uint32_t* base,
+                            uint32_t num_registers);
+  XE_FORCEINLINE
+  void WriteFetchFromMem(uint32_t start_index, uint32_t* base,
+                         uint32_t num_registers);
 
+  void WritePossiblySpecialRegistersFromMem(uint32_t start_index, uint32_t* base,
+                                           uint32_t num_registers);
   template <uint32_t register_lower_bound, uint32_t register_upper_bound>
   XE_FORCEINLINE void WriteRegisterRangeFromMem_WithKnownBound(
       uint32_t start_index, uint32_t* base, uint32_t num_registers);
@@ -680,9 +692,6 @@ class D3D12CommandProcessor final : public CommandProcessor {
   ID3D12Resource* readback_buffer_ = nullptr;
   uint32_t readback_buffer_size_ = 0;
 
-  std::atomic<bool> pix_capture_requested_ = false;
-  bool pix_capturing_;
-
   // The current fixed-function drawing state.
   D3D12_VIEWPORT ff_viewport_;
   D3D12_RECT ff_scissor_;
@@ -776,6 +785,9 @@ class D3D12CommandProcessor final : public CommandProcessor {
   // scratch memexport data
   MemExportRange memexport_ranges_[512];
   uint32_t memexport_range_count_ = 0;
+
+  std::atomic<bool> pix_capture_requested_ = false;
+  bool pix_capturing_;
 };
 
 }  // namespace d3d12

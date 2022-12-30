@@ -24,10 +24,79 @@ namespace xe {
 namespace kernel {
 namespace xam {
 
+struct X_PROFILEENUMRESULT {
+  xe::be<uint64_t> xuid_offline;  // E0.....
+  X_XAMACCOUNTINFO account;
+  xe::be<uint32_t> device_id;
+};
+static_assert_size(X_PROFILEENUMRESULT, 0x188);
+
+dword_result_t XamProfileCreateEnumerator_entry(dword_t device_id,
+                                                lpdword_t handle_out) {
+  assert_not_null(handle_out);
+
+  auto e = new XStaticEnumerator<X_PROFILEENUMRESULT>(kernel_state(), 1);
+
+  e->Initialize(0xFF, 0xFE, 0x23001, 0x23003, 0);
+
+  for (uint32_t i = 0; i < 4; i++) {
+    if (!kernel_state()->IsUserSignedIn(i)) continue;
+
+    const auto& user_profile = kernel_state()->user_profile(i);
+
+    X_PROFILEENUMRESULT* profile = (X_PROFILEENUMRESULT*)e->AppendItem();
+    memset(profile, 0, sizeof(X_PROFILEENUMRESULT));
+    profile->xuid_offline = user_profile->xuid_offline();
+    profile->device_id = 0xF00D0000;
+
+    auto tag = to_utf16(user_profile->name());
+    xe::copy_and_swap<char16_t>(profile->account.gamertag, tag.c_str(),
+                                tag.length());
+    profile->account.xuid_online = user_profile->xuid_online();
+  }
+
+  *handle_out = e->handle();
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamProfileCreateEnumerator, kUserProfiles, kImplemented);
+
+dword_result_t XamProfileEnumerate_entry(dword_t handle, dword_t flags,
+                                         lpvoid_t buffer,
+                                         pointer_t<XAM_OVERLAPPED> overlapped) {
+  assert_true(flags == 0);
+
+  auto e = kernel_state()->object_table()->LookupObject<XEnumerator>(handle);
+  if (!e) {
+    if (overlapped) {
+      kernel_state()->CompleteOverlappedImmediateEx(
+          overlapped, X_ERROR_INVALID_HANDLE, X_ERROR_INVALID_HANDLE, 0);
+      return X_ERROR_IO_PENDING;
+    } else {
+      return X_ERROR_INVALID_HANDLE;
+    }
+  }
+
+  buffer.Zero(sizeof(X_PROFILEENUMRESULT));
+
+  X_RESULT result =
+      e->WriteItems(buffer.guest_address(), buffer.as<uint8_t*>(), nullptr);
+
+  // Return X_ERROR_NO_MORE_FILES in HRESULT form.
+  X_HRESULT extended_result = result != 0 ? X_HRESULT_FROM_WIN32(result) : 0;
+  if (overlapped) {
+    kernel_state()->CompleteOverlappedImmediateEx(
+        overlapped, result, extended_result, result == X_ERROR_SUCCESS ? 1 : 0);
+    return X_ERROR_IO_PENDING;
+  } else {
+    assert_always();
+    return X_ERROR_INVALID_PARAMETER;
+  }
+}
+DECLARE_XAM_EXPORT1(XamProfileEnumerate, kUserProfiles, kImplemented);
+
 X_HRESULT_result_t XamUserGetXUID_entry(dword_t user_index, dword_t type_mask,
                                         lpqword_t xuid_ptr) {
-  assert_true(type_mask == 1 || type_mask == 2 || type_mask == 3 ||
-              type_mask == 4 || type_mask == 7);
+  assert_true(type_mask >= 1 && type_mask <= 7);
   if (!xuid_ptr) {
     return X_E_INVALIDARG;
   }
@@ -37,13 +106,13 @@ X_HRESULT_result_t XamUserGetXUID_entry(dword_t user_index, dword_t type_mask,
     if (kernel_state()->IsUserSignedIn(user_index)) {
       const auto& user_profile = kernel_state()->user_profile(user_index);
       auto type = user_profile->type() & type_mask;
-      if (type & (2 | 4)) {
+      if (type & 2 && user_profile->signin_state() == 2) {
         // maybe online profile?
-        xuid = user_profile->xuid();
+        xuid = user_profile->xuid_online();
         result = X_E_SUCCESS;
-      } else if (type & 1) {
+      } else if (type & (1 | 4)) {
         // maybe offline profile?
-        xuid = user_profile->xuid();
+        xuid = user_profile->xuid_offline();
         result = X_E_SUCCESS;
       }
     }
@@ -72,17 +141,17 @@ DECLARE_XAM_EXPORT2(XamUserGetSigninState, kUserProfiles, kImplemented,
 
 typedef struct {
   xe::be<uint64_t> xuid;
-  xe::be<uint32_t> unk08;  // maybe zero?
+  xe::be<uint32_t> flags;  // bit 0 = live enabled, bit 1 = guest
   xe::be<uint32_t> signin_state;
-  xe::be<uint32_t> unk10;  // ?
-  xe::be<uint32_t> unk14;  // ?
+  xe::be<uint32_t> guest_number;
+  xe::be<uint32_t> guest_parent_index;
   char name[16];
 } X_USER_SIGNIN_INFO;
 static_assert_size(X_USER_SIGNIN_INFO, 40);
 
 X_HRESULT_result_t XamUserGetSigninInfo_entry(
     dword_t user_index, dword_t flags, pointer_t<X_USER_SIGNIN_INFO> info) {
-  if (!info) {
+  if (!info || flags < 0 || flags > 2) {
     return X_E_INVALIDARG;
   }
 
@@ -95,11 +164,30 @@ X_HRESULT_result_t XamUserGetSigninInfo_entry(
 
   if (kernel_state()->IsUserSignedIn(user_index)) {
     const auto& user_profile = kernel_state()->user_profile(user_index);
-    info->xuid = user_profile->xuid();
-    info->unk08 = 1;
+    if (flags & 1) {
+      if (user_profile->type() & 1) {
+        info->xuid = user_profile->xuid_offline();
+      } else {
+        info->xuid = 0;
+      }
+    } else if (user_profile->type() & 2) {
+      info->xuid = user_profile->xuid_online();
+    } else {
+      info->xuid = (flags == 0) ? user_profile->xuid_offline() : 0;
+    }
+
     info->signin_state = user_profile->signin_state();
+
+    uint32_t flags = 0;
+    if (info->signin_state == 2) flags &= 1;
+    if (user_profile->type() & 4) flags &= 2;
+    info->flags = flags;
+
     xe::string_util::copy_truncating(info->name, user_profile->name(),
                                      xe::countof(info->name));
+
+    // TODO: DEBUG - Idk why this is necessary.
+    info->flags = 1;
   } else {
     return X_E_NO_SUCH_USER;
   }
@@ -173,7 +261,8 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index,
     xuid_count = 1;
     if (kernel_state()->IsUserSignedIn(user_index)) {
       const auto& user_profile = kernel_state()->user_profile(user_index);
-      assert_true(static_cast<uint64_t>(xuids[0]) == user_profile->xuid());
+      assert_true(static_cast<uint64_t>(xuids[0]) ==
+                  user_profile->xuid_online());
     }
   }
   assert_zero(unk);  // probably flags
@@ -239,7 +328,7 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index,
 
   if (xuids) {
     uint64_t user_xuid = static_cast<uint64_t>(xuids[0]);
-    if (!kernel_state()->IsUserSignedIn(user_xuid)) {
+    if (!kernel_state()->IsUserSignedIn(user_xuid, true)) {
       if (overlapped) {
         kernel_state()->CompleteOverlappedImmediate(
             kernel_state()->memory()->HostToGuestVirtual(overlapped),
@@ -248,7 +337,7 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index,
       }
       return X_ERROR_NO_SUCH_USER;
     }
-    user_profile = kernel_state()->user_profile(user_xuid);
+    user_profile = kernel_state()->user_profile(user_xuid, true);
   }
 
   // First call asks for size (fill buffer_size_ptr).
@@ -297,7 +386,7 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index,
                         : setting->is_title_specific() ? 2
                                                        : 1;
     if (xuids) {
-      out_setting->xuid = user_profile->xuid();
+      out_setting->xuid = user_profile->xuid_offline();
     } else {
       out_setting->xuid = -1;
       out_setting->user_index = static_cast<uint32_t>(user_index);
@@ -433,7 +522,7 @@ dword_result_t XamUserWriteProfileSettings_entry(
 }
 DECLARE_XAM_EXPORT1(XamUserWriteProfileSettings, kUserProfiles, kImplemented);
 
-dword_result_t XamUserCheckPrivilege_entry(dword_t user_index, dword_t mask,
+dword_result_t XamUserCheckPrivilege_entry(dword_t user_index, dword_t type,
                                            lpdword_t out_value) {
   *out_value = 1;
   return X_ERROR_SUCCESS;
@@ -451,6 +540,13 @@ dword_result_t XamUserCheckPrivilege_entry(dword_t user_index, dword_t mask,
 
   // If we deny everything, games should hopefully not try to do stuff.
   *out_value = 0;
+
+  const auto& user_profile = kernel_state()->user_profile(user_index);
+  if (user_profile->signin_state() == 2 && type == 254) {
+    // We have enabled Live so let's allow multiplayer
+    *out_value = 1;
+  }
+
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamUserCheckPrivilege, kUserProfiles, kStub);
@@ -576,12 +672,7 @@ dword_result_t XamShowSigninUI_entry(dword_t unk, dword_t unk_mask) {
 }
 DECLARE_XAM_EXPORT1(XamShowSigninUI, kUserProfiles, kStub);
 
-// TODO(gibbed): probably a FILETIME/LARGE_INTEGER, unknown currently
-struct X_ACHIEVEMENT_UNLOCK_TIME {
-  xe::be<uint32_t> unk_0;
-  xe::be<uint32_t> unk_4;
-};
-
+#pragma pack(push, 1)
 struct X_ACHIEVEMENT_DETAILS {
   xe::be<uint32_t> id;
   xe::be<uint32_t> label_ptr;
@@ -589,12 +680,13 @@ struct X_ACHIEVEMENT_DETAILS {
   xe::be<uint32_t> unachieved_ptr;
   xe::be<uint32_t> image_id;
   xe::be<uint32_t> gamerscore;
-  X_ACHIEVEMENT_UNLOCK_TIME unlock_time;
+  xe::be<uint64_t> unlock_time;  // FILETIME
   xe::be<uint32_t> flags;
 
   static const size_t kStringBufferSize = 464;
 };
 static_assert_size(X_ACHIEVEMENT_DETAILS, 36);
+#pragma pack(pop)
 
 class XStaticAchievementEnumerator : public XEnumerator {
  public:
@@ -605,10 +697,7 @@ class XStaticAchievementEnumerator : public XEnumerator {
     std::u16string unachieved;
     uint32_t image_id;
     uint32_t gamerscore;
-    struct {
-      uint32_t unk_0;
-      uint32_t unk_4;
-    } unlock_time;
+    uint64_t unlock_time;
     uint32_t flags;
   };
 
@@ -652,8 +741,7 @@ class XStaticAchievementEnumerator : public XEnumerator {
           !!(flags_ & 4) ? AppendString(string_buffer, item.unachieved) : 0;
       details[i].image_id = item.image_id;
       details[i].gamerscore = item.gamerscore;
-      details[i].unlock_time.unk_0 = item.unlock_time.unk_0;
-      details[i].unlock_time.unk_4 = item.unlock_time.unk_4;
+      details[i].unlock_time = item.unlock_time;
       details[i].flags = item.flags;
     }
 
@@ -714,27 +802,47 @@ dword_result_t XamUserCreateAchievementEnumerator_entry(
     *buffer_size_ptr = static_cast<uint32_t>(entry_size) * count;
   }
 
+  if (!kernel_state()->IsUserSignedIn(user_index)) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+
+  // Copy achievements into the enumerator if game GPD is loaded
+  auto* game_gpd =
+      kernel_state()->user_profile(user_index)->GetTitleGpd(title_id);
+  if (!game_gpd) {
+    XELOGE(
+        "XamUserCreateAchievementEnumerator failed to find GPD for title {:08X}!",
+        title_id);
+    return X_ERROR_SUCCESS;
+  }
+
   auto e = object_ref<XStaticAchievementEnumerator>(
       new XStaticAchievementEnumerator(kernel_state(), count, flags));
-  auto result = e->Initialize(user_index, 0xFB, 0xB000A, 0xB000B, 0);
+  auto result =
+      e->Initialize(user_index, game_gpd->GetTitleId(), 0xB000A, 0xB000B, 0);
   if (XFAILED(result)) {
     return result;
   }
 
-  uint32_t dummy_count = std::min(100u, uint32_t(count));
-  for (uint32_t i = 1; i <= dummy_count; ++i) {
+  std::vector<xdbf::Achievement> achievements;
+  game_gpd->GetAchievements(&achievements);
+
+  auto i = 0;
+  for (auto ach : achievements) {
     auto item = XStaticAchievementEnumerator::AchievementDetails{
-        i,  // dummy achievement id
-        fmt::format(u"Dummy {}", i),
+        ach.id,  // dummy achievement id
+        fmt::format(u"Dummy {}", ach.id),
         u"Dummy description",
         u"Dummy unachieved",
-        i,  // dummy image id
-        0,
-        {0, 0},
-        8};  // flags=8 makes dummy achievements show up in 4D5307DC
-             // achievements list.
+        ach.image_id,  // dummy image id
+        ach.gamerscore,
+        ach.unlock_time,
+        ach.flags};
     e->AppendItem(item);
+    i++;
   }
+
+  XELOGD("XamUserCreateAchievementEnumerator: added %d items to enumerator", i);
 
   *handle_ptr = e->handle();
   return X_ERROR_SUCCESS;

@@ -16,6 +16,7 @@
 #include <string>
 #include <utility>
 
+#include "third_party/cpptoml/include/cpptoml.h"
 #include "third_party/fmt/include/fmt/format.h"
 #include "third_party/imgui/imgui.h"
 #include "xenia/base/assert.h"
@@ -133,7 +134,7 @@ using xe::ui::KeyEvent;
 using xe::ui::MenuItem;
 using xe::ui::UIEvent;
 
-const std::string kBaseTitle = "Xenia-canary";
+const std::string kBaseTitle = "Xenia-burnout5";
 
 EmulatorWindow::EmulatorWindow(Emulator* emulator,
                                ui::WindowedAppContext& app_context)
@@ -160,6 +161,8 @@ EmulatorWindow::EmulatorWindow(Emulator* emulator,
 #endif
                 XE_BUILD_BRANCH "@" XE_BUILD_COMMIT_SHORT " on " XE_BUILD_DATE
                 ")";
+
+  ReadRecentlyLaunchedTitles();
 }
 
 std::unique_ptr<EmulatorWindow> EmulatorWindow::Create(
@@ -503,10 +506,14 @@ bool EmulatorWindow::Initialize() {
   // FIXME: This code is really messy.
   auto main_menu = MenuItem::Create(MenuItem::Type::kNormal);
   auto file_menu = MenuItem::Create(MenuItem::Type::kPopup, "&File");
+  auto recent_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Open Recent");
+  FillRecentlyLaunchedTitlesMenu(recent_menu.get());
   {
     file_menu->AddChild(
         MenuItem::Create(MenuItem::Type::kString, "&Open...", "Ctrl+O",
                          std::bind(&EmulatorWindow::FileOpen, this)));
+    file_menu->AddChild(std::move(recent_menu));
+
     file_menu->AddChild(
         MenuItem::Create(MenuItem::Type::kString, "Install Content...",
                          std::bind(&EmulatorWindow::InstallContent, this)));
@@ -614,7 +621,7 @@ bool EmulatorWindow::Initialize() {
         MenuItem::Type::kString, "Build commit on GitHub...", "F2",
         std::bind(&EmulatorWindow::ShowBuildCommit, this)));
     help_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "Recent changes on GitHub...", [this]() {
+        MenuItem::Type::kString, "Recent changes on GitHub...", []() {
           LaunchWebBrowser(
               "https://github.com/xenia-project/xenia/compare/" XE_BUILD_COMMIT
               "..." XE_BUILD_BRANCH);
@@ -622,7 +629,7 @@ bool EmulatorWindow::Initialize() {
     help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
     help_menu->AddChild(MenuItem::Create(
         MenuItem::Type::kString, "&About...",
-        [this]() { LaunchWebBrowser("https://xenia.jp/about/"); }));
+        []() { LaunchWebBrowser("https://xenia.jp/about/"); }));
   }
   main_menu->AddChild(std::move(help_menu));
 
@@ -806,6 +813,10 @@ void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
       ShowBuildCommit();
     } break;
 
+    case ui::VirtualKey::kF9: {
+      RunPreviouslyPlayedTitle();
+    } break;
+
     default:
       return;
   }
@@ -813,15 +824,12 @@ void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
   e.set_handled(true);
 }
 
-void EmulatorWindow::FileDrop(const std::filesystem::path& filename) {
+void EmulatorWindow::FileDrop(const std::filesystem::path& path) {
   if (!emulator_initialized_) {
     return;
   }
-  auto result = emulator_->LaunchPath(filename);
-  if (XFAILED(result)) {
-    // TODO: Display a message box.
-    XELOGE("Failed to launch target: {:08X}", result);
-  }
+
+  RunTitle(path);
 }
 
 void EmulatorWindow::FileOpen() {
@@ -844,24 +852,12 @@ void EmulatorWindow::FileOpen() {
     if (!selected_files.empty()) {
       path = selected_files[0];
     }
-  }
-
-  if (!path.empty()) {
-    // Normalize the path and make absolute.
-    auto abs_path = std::filesystem::absolute(path);
-    auto result = emulator_->LaunchPath(abs_path);
-    if (XFAILED(result)) {
-      // TODO: Display a message box.
-      XELOGE("Failed to launch target: {:08X}", result);
-    }
+    // Only run the title if a file is selected
+    RunTitle(path);
   }
 }
 
-void EmulatorWindow::FileClose() {
-  if (emulator_->is_title_open()) {
-    emulator_->TerminateTitle();
-  }
-}
+void EmulatorWindow::FileClose() { emulator_->TerminateTitle(); }
 
 void EmulatorWindow::InstallContent() {
   std::vector<std::filesystem::path> paths;
@@ -883,9 +879,14 @@ void EmulatorWindow::InstallContent() {
       // Normalize the path and make absolute.
       auto abs_path = std::filesystem::absolute(path);
       auto result = emulator_->InstallContentPackage(abs_path);
+
       if (result != X_STATUS_SUCCESS) {
-        // TODO: Display a message box.
         XELOGE("Failed to install content! Error code: {:08X}", result);
+
+        MessageBoxA(nullptr,
+                    "Failed to install content!\n\nCheck xenia.log for technical "
+                    "details.",
+                    "Failed to install content!", MB_ICONERROR);
       }
     }
   }
@@ -1068,6 +1069,139 @@ void EmulatorWindow::SetInitializingShaderStorage(bool initializing) {
   }
   initializing_shader_storage_ = initializing;
   UpdateTitle();
+}
+
+void EmulatorWindow::RunPreviouslyPlayedTitle() {
+  if (recently_launched_titles_.size() >= 1) {
+    RunTitle(recently_launched_titles_[0].path_to_file);
+  }
+}
+
+xe::X_STATUS EmulatorWindow::RunTitle(std::filesystem::path path) {
+  bool titleExists = !std::filesystem::exists(path);
+
+  if (path.empty() || titleExists) {
+    char* log_msg = path.empty() ? "Failed to launch title path is empty"
+                                 : "Failed to launch title path is invalid";
+
+    XELOGE(log_msg);
+
+    MessageBoxA(nullptr, log_msg, "Title Launch Failed!", MB_ICONERROR);
+
+    return X_STATUS_NO_SUCH_FILE;
+  }
+  
+  if (emulator_->is_title_open()) {
+    // Terminate the current title and start a new title.
+    // if (emulator_->TerminateTitle() == X_STATUS_SUCCESS) {
+    //   return RunTitle(path);
+    // }
+
+    return X_STATUS_UNSUCCESSFUL;
+  }
+
+  // Prevent crashing the emulator by not loading a game if a game is already
+  // loaded.
+  auto abs_path = std::filesystem::absolute(path);
+  auto result = emulator_->LaunchPath(abs_path);
+
+  if (result) {
+    XELOGE("Failed to launch target: {:08X}", result);
+
+    MessageBoxA(
+        nullptr,
+        "Failed to launch title.\n\nCheck xenia.log for technical details.",
+        "Title Launch Failed!", MB_ICONERROR);
+  } else {
+    AddRecentlyLaunchedTitle(path, emulator_->title_name());
+  }
+
+  return result;
+}
+
+void EmulatorWindow::FillRecentlyLaunchedTitlesMenu(
+    xe::ui::MenuItem* recent_menu) {
+  unsigned int index = 0;
+  for (const auto& [title_name, path] : recently_launched_titles_) {
+    if (index == 0) {
+      recent_menu->AddChild(
+          MenuItem::Create(MenuItem::Type::kString, title_name, "F9",
+                           std::bind(&EmulatorWindow::RunTitle, this, path)));
+    } else {
+      recent_menu->AddChild(
+          MenuItem::Create(MenuItem::Type::kString, title_name,
+                           std::bind(&EmulatorWindow::RunTitle, this, path)));
+    }
+    index++;
+  }
+}
+
+void EmulatorWindow::ReadRecentlyLaunchedTitles() {
+  std::ifstream file(emulator()->storage_root() / "recent.toml");
+  if (!file.is_open()) {
+    return;
+  }
+
+  std::shared_ptr<cpptoml::table> parsed_file;
+  try {
+    cpptoml::parser p(file);
+    parsed_file = p.parse();
+  } catch (cpptoml::parse_exception exception) {
+    // TODO(Gliniak): Better handling of errors, but good enough for now.
+    return;
+  }
+
+  if (parsed_file->is_table()) {
+    for (const auto& [index, entry] : *parsed_file->as_table()) {
+      for (const auto& [title_name, path] : *entry->as_table()) {
+        recently_launched_titles_.push_back(
+            {title_name, path->as<std::string>()->get()});
+      }
+    }
+  }
+}
+
+void EmulatorWindow::AddRecentlyLaunchedTitle(
+    std::filesystem::path path_to_file, std::string title_name) {
+  // Check if game is already on list and pop it to front
+  auto entry_index = std::find_if(recently_launched_titles_.cbegin(),
+                                  recently_launched_titles_.cend(),
+                                  [&title_name](const RecentTitleEntry& entry) {
+                                    return entry.title_name == title_name;
+                                  });
+  if (entry_index != recently_launched_titles_.cend()) {
+    recently_launched_titles_.erase(entry_index);
+  }
+
+  recently_launched_titles_.insert(recently_launched_titles_.cbegin(),
+                                   {title_name, path_to_file});
+  // Serialize to toml
+  auto toml_table = cpptoml::make_table();
+
+  const uint8_t amount_of_stored_entries = 10;
+  uint8_t index = 0;
+
+  for (const auto& [title_name, path] : recently_launched_titles_) {
+    auto entry_table = cpptoml::make_table();
+
+    // Fill entry under specific index.
+    std::string str_path = xe::path_to_utf8(path);
+    entry_table->insert(title_name.empty() ? str_path : title_name, str_path);
+    entry_table->end();
+
+    toml_table->insert(std::to_string(index++), entry_table);
+
+    if (index >= amount_of_stored_entries) {
+      break;
+    }
+  }
+  toml_table->end();
+
+  // Open and write serialized data.
+  std::ofstream file(emulator()->storage_root() / "recent.toml",
+                     std::ofstream::trunc);
+  file << *toml_table;
+  file.close();
 }
 
 }  // namespace app

@@ -23,6 +23,23 @@ namespace kernel {
 namespace xam {
 namespace apps {
 
+struct X_XUSER_ACHIEVEMENT {
+  xe::be<uint32_t> user_idx;
+  xe::be<uint32_t> achievement_id;
+};
+
+struct XSESSION_REGISTRATION_RESULTS {
+  xe::be<uint32_t> registrants_count;
+  xe::be<uint32_t> registrants_ptr;
+};
+
+struct XSESSION_REGISTRANT {
+  xe::be<uint64_t> qwMachineID;
+  xe::be<uint32_t> bTrustworthiness;
+  xe::be<uint32_t> bNumUsers;
+  xe::be<uint32_t> rgUsers;
+};
+
 XgiApp::XgiApp(KernelState* kernel_state) : App(kernel_state, 0xFB) {}
 
 // http://mb.mirage.org/bugzilla/xliveless/main.c
@@ -101,18 +118,6 @@ struct XSESSION_SEARCHRESULT_HEADER {
   xe::be<uint32_t> search_results_ptr;
 };
 
-struct XSESSION_REGISTRATION_RESULTS {
-  xe::be<uint32_t> registrants_count;
-  xe::be<uint32_t> registrants_ptr;
-};
-
-struct XSESSION_REGISTRANT {
-  xe::be<uint64_t> qwMachineID;
-  xe::be<uint32_t> bTrustworthiness;
-  xe::be<uint32_t> bNumUsers;
-  xe::be<uint32_t> rgUsers;
-};
-
 
 X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
                                       uint32_t buffer_length) {
@@ -163,14 +168,14 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
 
       // TODO: Remove hardcoded results, populate properly.
 
-      resultsHeader->search_results_count = 9;
+      resultsHeader->search_results_count = 1;
       resultsHeader->search_results_ptr = results_ptr;
 
       result[0].contexts_count = (uint32_t)data->num_ctx;
       result[0].properties_count = (uint32_t)data->num_props;
       result[0].contexts_ptr = data->ctx_ptr;
       result[0].properties_ptr = data->props_ptr;
-      result[0].info.hostAddress.wPortOnline = 9103;
+      result[0].info.hostAddress.wPortOnline = 3074;
       result[0].info.hostAddress.ina.S_un.S_addr = 0x7F000001;
       result[0].filled_priv_slots = 0;
       result[0].filled_public_slots = 0;
@@ -213,7 +218,7 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       results->registrants_count = 2;
 
       uint32_t registrants_ptr =
-          memory_->SystemHeapAlloc(sizeof(XSESSION_REGISTRANT) * 2);
+          memory_->SystemHeapAlloc(sizeof(XSESSION_REGISTRANT)*2);
       auto* registrant =
           memory_->TranslateVirtual<XSESSION_REGISTRANT*>(registrants_ptr);
 
@@ -223,11 +228,15 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       registrant[0].qwMachineID = 1;
       registrant[0].bTrustworthiness = 1;
 
+      registrant[1].bNumUsers = 1;
+      registrant[1].qwMachineID = 1;
+      registrant[1].bTrustworthiness = 1;
+
       uint32_t users_ptr = memory_->SystemHeapAlloc(sizeof(uint64_t) * 2);
       registrant[0].rgUsers = users_ptr;
       registrant[1].rgUsers = users_ptr + 8;
 
-      auto* xuids = memory_->TranslateVirtual<uint64_t*>(users_ptr);
+      auto* xuids = memory_->TranslateVirtual<be<uint64_t>*>(users_ptr);
 
       xuids[0] = 0x000901FC3FB8FE71;
       xuids[1] = 0x000901FC3FB8FE72;
@@ -263,6 +272,40 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       uint32_t achievements_ptr = xe::load_and_swap<uint32_t>(buffer + 4);
       XELOGD("XGIUserWriteAchievements({:08X}, {:08X})", achievement_count,
              achievements_ptr);
+
+      bool modified = false;
+      auto* achievement =
+          (X_XUSER_ACHIEVEMENT*)memory_->TranslateVirtual(achievements_ptr);
+
+      if (kernel_state_->IsUserSignedIn(achievement->user_idx)) {
+        XELOGE("XGIUserWriteAchievements failed, invalid user.");
+        return X_E_FAIL;
+      }
+
+      auto* game_gpd =
+          kernel_state_->user_profile(achievement->user_idx)->GetTitleGpd();
+      if (!game_gpd) {
+        XELOGE("XGIUserWriteAchievements failed, no game GPD set?");
+        return X_E_SUCCESS;
+      }
+
+      xdbf::Achievement ach;
+      for (uint32_t i = 0; i < achievement_count; i++, achievement++) {
+        if (game_gpd->GetAchievement(achievement->achievement_id, &ach)) {
+          if (!ach.IsUnlocked()) {
+            XELOGI("Achievement Unlocked! {} ({} gamerscore) - {}",
+                   to_utf8(ach.label), ach.gamerscore,
+                   to_utf8(ach.description));
+            ach.Unlock(false);
+            game_gpd->UpdateAchievement(ach);
+            modified = true;
+          }
+        }
+      }
+      if (modified) {
+        kernel_state_->user_profile(achievement->user_idx)->UpdateTitleGpd();
+      }
+
       return X_E_SUCCESS;
     }
     case 0x000B0010: {
@@ -295,14 +338,39 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
     case 0x000B0012: {
       assert_true(buffer_length == 0x14);
       uint32_t session_ptr = xe::load_and_swap<uint32_t>(buffer + 0x0);
-      uint32_t user_count = xe::load_and_swap<uint32_t>(buffer + 0x4);
-      uint32_t unk_0 = xe::load_and_swap<uint32_t>(buffer + 0x8);
+      uint32_t array_count = xe::load_and_swap<uint32_t>(buffer + 0x4);
+      uint32_t xuid_array = xe::load_and_swap<uint32_t>(buffer + 0x8);
       uint32_t user_index_array = xe::load_and_swap<uint32_t>(buffer + 0xC);
       uint32_t private_slots_array = xe::load_and_swap<uint32_t>(buffer + 0x10);
 
-      assert_zero(unk_0);
-      XELOGD("XGISessionJoinLocal({:08X}, {}, {}, {:08X}, {:08X})", session_ptr,
-             user_count, unk_0, user_index_array, private_slots_array);
+      // Local uses user indices, remote uses XUIDs
+      if (xuid_array == 0) {
+        XELOGD("XGISessionJoinLocal({:08X}, {}, {:08X}, {:08X}, {:08X})",
+               session_ptr, array_count, xuid_array, user_index_array,
+               private_slots_array);
+      } else {
+        XELOGD("XGISessionJoinRemote({:08X}, {}, {:08X}, {:08X}, {:08X})",
+               session_ptr, array_count, xuid_array, user_index_array,
+               private_slots_array);
+      }
+      return X_E_SUCCESS;
+    }
+    case 0x000B0013: {
+      assert_true(buffer_length == 0x14);
+      uint32_t session_ptr = xe::load_and_swap<uint32_t>(buffer + 0x0);
+      uint32_t array_count = xe::load_and_swap<uint32_t>(buffer + 0x4);
+      uint32_t xuid_array = xe::load_and_swap<uint32_t>(buffer + 0x8);
+      uint32_t user_index_array = xe::load_and_swap<uint32_t>(buffer + 0xC);
+      uint32_t unk010 = xe::load_and_swap<uint32_t>(buffer + 0x10);
+
+      // Local uses user indices, remote uses XUIDs
+      if (xuid_array == 0) {
+        XELOGD("XGISessionLeaveLocal({:08X}, {}, {:08X}, {:08X}, {:08X})",
+               session_ptr, array_count, xuid_array, user_index_array, unk010);
+      } else {
+        XELOGD("XGISessionLeaveRemote({:08X}, {}, {:08X}, {:08X}, {:08X})",
+               session_ptr, array_count, xuid_array, user_index_array, unk010);
+      }
       return X_E_SUCCESS;
     }
     case 0x000B0014: {
