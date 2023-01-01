@@ -151,7 +151,7 @@ static_assert_size(X_USER_SIGNIN_INFO, 40);
 
 X_HRESULT_result_t XamUserGetSigninInfo_entry(
     dword_t user_index, dword_t flags, pointer_t<X_USER_SIGNIN_INFO> info) {
-  if (!info || flags < 0 || flags > 2) {
+  if (!info) {
     return X_E_INVALIDARG;
   }
 

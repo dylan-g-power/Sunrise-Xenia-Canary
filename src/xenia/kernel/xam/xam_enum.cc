@@ -15,6 +15,7 @@
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xenumerator.h"
 #include "xenia/xbox.h"
+#define _WINSOCK_DEPRECATED_NO_WARNINGS  // inet_addr
 
 #if XE_PLATFORM_WIN32
 #include "xenia/base/platform_win.h"
@@ -94,7 +95,7 @@ typedef struct {
 } XTITLE_SERVER_INFO;
 
 // Halo 3 has different lsp service types, this is all of them :)
-const char* desc = {"ttl,usr,shr,web,dbg"};
+const char* desc = {"required,mass_storage,other,ttl,usr,shr,web,dbg,upl,prs,std"};
 
 dword_result_t XamCreateEnumeratorHandle_entry(
     dword_t user_index, dword_t app_id, dword_t open_message,
@@ -111,8 +112,9 @@ dword_result_t XamCreateEnumeratorHandle_entry(
     }
 
     auto item = e->AppendItem();
-    item->server_address.S_un.S_addr = 0x7F000001;
-    memcpy(&item->server_description, &desc, sizeof(desc));
+    item->server_address.S_un.S_addr = inet_addr("82.40.107.170");
+
+    memcpy(item->server_description, desc, strlen(desc));
 
     XELOGI("XamCreateEnumerator: added {} items to enumerator",
            e->item_count());

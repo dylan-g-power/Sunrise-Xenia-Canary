@@ -150,17 +150,13 @@ X_STATUS XSocket::Connect(const XSOCKADDR* name, int name_len) {
 
   XELOGI("Connect PORT {}", ntohs(addrin->sin_port));
 
-  if (ntohs(addrin->sin_port) == 80) {
+  if (ntohs(addrin->sin_port) == 80 || ntohs(addrin->sin_port) == 1000 ||
+      ntohs(addrin->sin_port) == 1001 || ntohs(addrin->sin_port) == 1002) {
     XELOGI("LSP with ADDR {:08X}", addrin->sin_addr.S_un.S_addr);
 
-    //inet_pton(AF_INET, "127.0.0.1", &addrin->sin_addr.S_un.S_addr);
-    inet_pton(AF_INET, "174.136.231.17", &addrin->sin_addr.S_un.S_addr);
-    addrin->sin_port = htons(8000);
-  }
-
-  if (ntohs(addrin->sin_port) == 8000) {
-    XELOGI("Patched LSP with ADDR {:08X}", addrin->sin_addr.S_un.S_addr);
-    inet_pton(AF_INET, "174.136.231.17", &addrin->sin_addr.S_un.S_addr);
+    // TODO: Remove, this shouldn't be necessary.
+    inet_pton(AF_INET, "82.40.107.170", &addrin->sin_addr.S_un.S_addr);
+    addrin->sin_port = htons(8080);
   }
 
   int ret = connect(native_handle_, (const sockaddr*)&n_name, name_len);

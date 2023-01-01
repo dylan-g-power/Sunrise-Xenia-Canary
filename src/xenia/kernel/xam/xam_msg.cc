@@ -28,8 +28,6 @@ dword_result_t XMsgInProcessCall_entry(dword_t app, dword_t message,
     XELOGE("XMsgInProcessCall: app {:08X} undefined", app);
   }
   
-  if (result == 0) result = -1;
-
   return result;
 }
 DECLARE_XAM_EXPORT1(XMsgInProcessCall, kNone, kImplemented);
